@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,11 @@ from radar import config, store  # noqa: E402
 from radar.i18n import t  # noqa: E402
 
 KINDS = ["x", "hf", "breakout", "sitemap", "newsite", "usecase", "cosearch", "watch"]
+
+PAID = {"x", "usecases", "review", "judge"}
+STATUS_LABELS = {"x": "① X", "hf": "① HF", "breakout": "② 爆发", "sitemap": "③ 竞品", "newsite": "③ 新站",
+                 "gsc": "④ GSC", "review": "⑤ 复盘", "usecases": "关键词表", "judge": "名字判断"}
+STATE_TEXT = {"ok": "正常", "skipped": "未开", "error": "失败"}
 
 
 def _esc(text) -> str:
@@ -68,7 +74,34 @@ td.term{font-weight:600}
 .vd.hit{background:#dafbe1;color:#1a7f37}.vd.miss{background:#ffebe9;color:#cf222e}.vd.wait{color:var(--mut)}
 a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 .empty{color:var(--mut);padding:16px;border:1px dashed var(--line);border-radius:8px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chip{font-size:12px;padding:2px 8px;border-radius:12px;border:1px solid var(--line)}
+.chip.ok{background:#dafbe1;color:#1a7f37;border-color:#aceebb}
+.chip.error{background:#ffebe9;color:#cf222e;border-color:#ffcecb}
+.chip.skipped{background:#eef2f6;color:var(--mut)}
+.hint{color:var(--mut);font-size:12px;margin:4px 0 0}
 """
+
+
+def _status_strip(status: dict | None) -> str:
+    if not status or not status.get("signals"):
+        return ""
+    chips, off = [], []
+    for k, s in status["signals"].items():
+        state = s.get("state", "ok")
+        label = STATUS_LABELS.get(k, k)
+        tip = _esc(s.get("detail") or STATE_TEXT.get(state, ""))
+        chips.append(f'<span class="chip {state}" title="{tip}">{_esc(label)} · {_esc(STATE_TEXT.get(state, state))}</span>')
+        if state in ("skipped", "error"):
+            off.append(label)
+    paid_off = [STATUS_LABELS.get(k, k) for k, s in status["signals"].items()
+                if k in PAID and s.get("state") in ("skipped", "error")]
+    hint = ('<p class="hint">付费信号（X / 关键词表 / 复盘 / 名字判断）未开启：在仓库加 secret '
+            '<code>AISA_API_KEY</code> 即可解锁。</p>') if paid_off else ""
+    off_note = f' · 未开启/失败：{"、".join(off)}' if off else ""
+    return (f'<div class="lastrun"><span class="meta">上次运行：{_esc(status.get("command"))} · '
+            f'{_esc(status.get("time"))}{_esc(off_note)}</span>'
+            f'<div class="chips">{"".join(chips)}</div></div>{hint}')
 
 
 def _row(r: dict) -> str:
@@ -130,6 +163,14 @@ def build(state: Path, out: Path, report_path: Path, days: int) -> Path:
     if report_path.exists():
         (out / "report.md").write_text(report_path.read_text(encoding="utf-8"), encoding="utf-8")
 
+    status = None
+    last_run = state / "last_run.json"
+    if last_run.exists():
+        try:
+            status = json.loads(last_run.read_text(encoding="utf-8"))
+        except ValueError:
+            status = None
+
     rows = "".join(_row(r) for r in leads)
     table = (f'<table><thead><tr><th>词</th><th>信号</th><th>名字得分</th><th>首次出现</th>'
              f"<th>最近出现</th><th>复盘</th><th>说明</th></tr></thead><tbody>{rows}</tbody></table>") \
@@ -143,7 +184,8 @@ def build(state: Path, out: Path, report_path: Path, days: int) -> Path:
         f"<style>{CSS}</style><title>New-term radar</title></head><body>"
         "<header><h1>新词雷达 · New-term radar</h1>"
         f'<span class="meta">更新于 {generated} · 近 {days} 天 {len(leads)} 个候选词</span></header>'
-        f"<main>{_report_section(report_path, out)}"
+        f"<main>{_status_strip(status)}"
+        f"<h2>日报</h2>{_report_section(report_path, out)}"
         f"<h2>各信号命中率（近 {summary.get('window_days', 60)} 天）</h2>{_hit_cards(summary)}"
         f"<h2>候选新词</h2>{table}"
         "</main></body></html>"

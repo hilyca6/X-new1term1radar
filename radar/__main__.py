@@ -33,7 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import breakout, config, gsc, new_sites, notify, report, review, sitemaps, sources, store, usecases
@@ -60,6 +60,28 @@ def _finish(args, text: str, subject: str) -> None:
         print(notify.send(subject, text))
 
 
+def save_status(state: Path, command: str, blocks: dict, extra: dict, found: dict, rev: dict) -> None:
+    """Write state/last_run.json: when it last ran and how each signal ended, for the
+    dashboard (scripts/build_site.py) to show which signals are off or failing."""
+    def st(b: dict) -> dict:
+        if not isinstance(b, dict):
+            return {"state": "ok"}
+        if b.get("error"):
+            return {"state": "error", "detail": " ".join(str(b["error"]).split())[:200]}
+        if b.get("skipped") or b.get("off"):
+            return {"state": "skipped"}
+        return {"state": "ok"}
+
+    signals = {k: st(blocks.get(k)) for k in ("x", "hf", "breakout", "sitemap", "newsite")}
+    signals["gsc"], signals["review"] = st(found), st(rev)
+    signals["usecases"], signals["judge"] = st(extra.get("usecases", {})), st(extra.get("judge", {}))
+    data = {"command": command, "time": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "signals": signals}
+    try:
+        (state / "last_run.json").write_text(json.dumps(data, ensure_ascii=False, indent=1))
+    except OSError:
+        pass
+
+
 def cmd_sources(args, cfg: dict, state: Path) -> int:
     blocks = {"x": run(lambda: sources.x_new(cfg, state), "x" in args.skip),
               "hf": run(lambda: sources.hf_new(cfg, state), "hf" in args.skip)}
@@ -67,6 +89,7 @@ def cmd_sources(args, cfg: dict, state: Path) -> int:
     conn = store.connect(state)
     extra = {"judge": judged, "record": run(lambda: {"recorded": store.record(conn, report.to_record(cfg, lead))})}
     errors = any(b.get("error") for b in (*blocks.values(), *extra.values()))
+    save_status(state, "sources", blocks, extra, {}, {})
     if report.named(cfg, lead) or errors:
         _finish(args, report.sources(cfg, lead, blocks, extra), f"New-term radar · sources {date.today()}")
     else:
@@ -98,6 +121,7 @@ def cmd_daily(args, cfg: dict, state: Path) -> int:
     rev = run(lambda: review.review(cfg, conn), "review" in args.skip)
     summ = run(lambda: store.summary(conn))
     text = report.daily(cfg, lead, blocks, found, rev, summ, extra)
+    save_status(state, "daily", blocks, extra, found, rev)
     if args.out:
         Path(args.out).with_suffix(".json").write_text(json.dumps(
             {"leads": lead, **blocks, "gsc": found, "review": rev, "summary": summ, "keywords": extra["usecases"]}, ensure_ascii=False, indent=1, default=str))

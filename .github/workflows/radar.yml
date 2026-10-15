@@ -97,6 +97,7 @@ jobs:
             report.md
             report.json
             state/radar.db
+            state/last_run.json
           if-no-files-found: ignore
           retention-days: 30
 
