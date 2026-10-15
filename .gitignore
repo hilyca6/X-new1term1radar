@@ -1,9 +1,10 @@
-config.json
 state/
+_site/
 gsc_token.json
 gsc_client.json
 report.md
 report.json
+report.html
 sources.md
 __pycache__/
 .pytest_cache/
